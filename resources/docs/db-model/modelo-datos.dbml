@@ -1,0 +1,412 @@
+// Sistema de Gestión de Turnos Médicos — Modelo de datos
+// Grupo 3 · Aplicaciones Web y Móvil · Unidad I · TP N.º 1
+// Convenciones de Laravel: tablas en plural, snake_case, FK <singular>_id,
+// tablas intermedias con ambos modelos en singular y orden alfabético.
+// Pegar en https://dbdiagram.io
+
+// ─────────────── Enumeraciones ───────────────
+
+Enum appointment_status {
+  booked                    [note: 'Reservado']
+  confirmed                 [note: 'Confirmado por el paciente']
+  cancelled_by_professional [note: 'Cancelado por el profesional']
+  cancelled_by_center       [note: 'Cancelado por recepción o el administrador']
+  no_show                   [note: 'Ausente sin aviso']
+  attended                  [note: 'Atendido']
+}
+
+Enum appointment_source {
+  portal [note: 'Autogestión del paciente']
+  desk   [note: 'Mostrador o teléfono']
+}
+
+Enum exception_type {
+  absence [note: 'Ausencia del profesional']
+  block   [note: 'Bloqueo de una franja puntual']
+}
+
+Enum notification_type {
+  booking_confirmation
+  reminder
+  cancellation
+  reschedule
+  professional_news
+  early_alert
+}
+
+Enum notification_channel {
+  email [note: 'SMTP de Gmail, destinatario paciente']
+  push  [note: 'Push del navegador, destinatario profesional']
+}
+
+Enum notification_status {
+  pending
+  queued
+  sent
+  failed
+}
+
+// ─────────────── Configuración ───────────────
+
+Table settings {
+  id integer [primary key]
+  center_name varchar [not null]
+  timezone varchar [not null, default: 'America/Argentina/Buenos_Aires']
+  cancellation_window_minutes integer [not null, note: 'Cancelar fuera de esta ventana penaliza']
+  cancellation_penalty_days integer [not null, note: 'Días de bloqueo de la autogestión']
+  reminder_lead_minutes integer [not null, note: 'Anticipación del recordatorio']
+  no_show_alert_threshold integer [not null, note: 'Porcentaje que dispara la alerta temprana']
+  created_at timestamp
+  updated_at timestamp
+  Note: 'Una sola fila. Restricción de comprobación: id = 1.'
+}
+
+// ─────────────── Identidad y permisos ───────────────
+
+Table roles {
+  id integer [primary key]
+  name varchar [not null, unique]
+  description varchar
+  is_system boolean [not null, default: false, note: 'Rol de sistema, no editable']
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table permissions {
+  id integer [primary key]
+  name varchar [not null, unique, note: 'Formato <recurso>.<acción>, p. ej. appointments.cancel']
+  module varchar [not null, note: 'Agrupador para la pantalla de roles']
+  description varchar
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table role_user {
+  role_id integer [not null]
+  user_id integer [not null]
+
+  indexes {
+    (role_id, user_id) [pk]
+  }
+  Note: 'Un usuario del centro puede acumular roles: por ejemplo, un profesional que además cubre recepción.'
+}
+
+Table permission_role {
+  permission_id integer [not null]
+  role_id integer [not null]
+
+  indexes {
+    (permission_id, role_id) [pk]
+  }
+}
+
+Table users {
+  id integer [primary key]
+  name varchar [not null]
+  email varchar [not null, unique]
+  email_verified_at timestamp
+  password varchar [note: 'Nulo si la cuenta solo accede con Google']
+  google_id varchar [unique, note: 'Nulo si nunca vinculó Google']
+  avatar_url varchar
+  phone varchar
+  is_active boolean [not null, default: true]
+  created_at timestamp
+  updated_at timestamp
+}
+
+// ─────────────── Pacientes ───────────────
+
+Table nationalities {
+  id integer [primary key]
+  name varchar [not null, unique]
+  iso_code varchar [unique, note: 'Código ISO 3166-1 alfa-3']
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table health_insurances {
+  id integer [primary key]
+  name varchar [not null]
+  plan varchar
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table patients {
+  id integer [primary key]
+  health_insurance_id integer
+  nationality_id integer
+  document_number varchar [not null, unique]
+  first_name varchar [not null]
+  last_name varchar [not null]
+  birth_date date
+  phone varchar
+  email varchar [unique, note: 'Nulo si la ficha la cargó recepción y el paciente nunca se registró']
+  password varchar [note: 'Nulo mientras no active el acceso al portal, o si solo entra con Google']
+  google_id varchar [unique]
+  email_verified_at timestamp
+  member_number varchar [note: 'Número de afiliado']
+  blocked_until timestamptz [note: 'Penalización: con fecha futura no puede reservar por autogestión']
+  is_active boolean [not null, default: true]
+  created_at timestamp
+  updated_at timestamp
+  Note: '''
+  El paciente NO es un usuario del sistema: no accede al back-office.
+  Se autentica contra esta misma tabla, por una vía separada, y únicamente
+  para operar en el portal. La ficha existe aunque nunca se registre.
+  '''
+}
+
+// ─────────────── Catálogos ───────────────
+
+Table specialties {
+  id integer [primary key]
+  name varchar [not null, unique]
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table professionals {
+  id integer [primary key]
+  user_id integer [not null, unique]
+  license_number varchar [not null, note: 'Matrícula']
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table professional_specialty {
+  professional_id integer [not null]
+  specialty_id integer [not null]
+
+  indexes {
+    (professional_id, specialty_id) [pk]
+  }
+}
+
+Table rooms {
+  id integer [primary key]
+  name varchar [not null, note: 'Consultorio']
+  floor varchar
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table holidays {
+  id integer [primary key]
+  date date [not null, unique]
+  name varchar [not null]
+  is_nationwide boolean [not null, default: true, note: 'Falso: día no laborable propio del centro']
+  created_at timestamp
+  updated_at timestamp
+}
+
+// ─────────────── Historia clínica ───────────────
+
+Table medical_records {
+  id integer [primary key]
+  patient_id integer [not null, unique]
+  blood_type varchar [note: 'Grupo y factor']
+  background text [note: 'Antecedentes generales, alergias y medicación habitual']
+  opened_at timestamptz [not null]
+  created_at timestamp
+  updated_at timestamp
+  Note: 'Una historia clínica por paciente. Se abre en la primera consulta atendida.'
+}
+
+Table medical_entries {
+  id integer [primary key]
+  medical_record_id integer [not null]
+  appointment_id integer [unique, note: 'Nulo si la evolución no surge de un turno agendado']
+  professional_id integer [not null, note: 'Profesional que firma la entrada']
+  reason varchar [note: 'Motivo de consulta']
+  diagnosis text
+  treatment text
+  observations text
+  recorded_at timestamptz [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (medical_record_id, recorded_at)
+  }
+  Note: '''
+  Contenido clínico. Solo admite alta y corrección dentro del período
+  editable; toda modificación, y también toda lectura, queda auditada.
+  No confundir con appointments.notes, que es la observación administrativa
+  del turno y no forma parte de la historia clínica.
+  '''
+}
+
+// ─────────────── Agenda ───────────────
+
+Table schedules {
+  id integer [primary key]
+  professional_id integer [not null]
+  specialty_id integer [not null]
+  room_id integer [not null]
+  weekday smallint [not null, note: '0 domingo … 6 sábado']
+  start_time time [not null]
+  end_time time [not null]
+  slot_duration_minutes smallint [not null, note: 'Duración de la consulta']
+  valid_from date [not null]
+  valid_until date [note: 'Nulo: vigencia abierta']
+  created_at timestamp
+  updated_at timestamp
+  Note: 'Sin superposición por profesional ni por consultorio dentro de la vigencia.'
+}
+
+Table schedule_exceptions {
+  id integer [primary key]
+  professional_id integer [not null]
+  starts_at timestamptz [not null]
+  ends_at timestamptz [not null]
+  type exception_type [not null]
+  reason varchar
+  created_at timestamp
+  updated_at timestamp
+}
+
+// ─────────────── Turnos ───────────────
+
+Table appointments {
+  id integer [primary key]
+  patient_id integer [not null]
+  professional_id integer [not null]
+  specialty_id integer [not null]
+  room_id integer [note: 'Nulo si todavía no se asignó sala']
+  created_by integer [note: 'Usuario del centro que lo cargó. Nulo si lo reservó el paciente desde el portal o lo generó un proceso automático; en ese caso el origen queda en source']
+  cancelled_by integer [note: 'Nulo mientras el turno no se cancele']
+  starts_at timestamptz [not null]
+  ends_at timestamptz [not null]
+  status appointment_status [not null, default: 'booked']
+  source appointment_source [not null]
+  confirmation_code varchar [not null, unique, note: 'Código impreso en el comprobante']
+  cancellation_reason varchar
+  is_penalized boolean [not null, default: false]
+  notes text [note: 'Observación administrativa del turno atendido, nunca clínica']
+  attended_at timestamptz
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (professional_id, starts_at)
+    (patient_id, starts_at)
+    status
+  }
+  Note: '''
+  Tres restricciones de exclusión sobre el rango [starts_at, ends_at),
+  ignorando los turnos cancelados: por profesional, por consultorio y por
+  paciente. Se definen en PostgreSQL con EXCLUDE USING gist y no pueden
+  expresarse en DBML.
+  '''
+}
+
+// ─────────────── Avisos ───────────────
+
+Table notifications {
+  id integer [primary key]
+  notifiable_type varchar [not null, note: 'users o patients']
+  notifiable_id integer [not null]
+  appointment_id integer [note: 'Nulo en las alertas que no refieren a un turno']
+  type notification_type [not null]
+  channel notification_channel [not null]
+  status notification_status [not null, default: 'pending']
+  scheduled_for timestamptz [not null]
+  sent_at timestamptz
+  read_at timestamptz
+  attempts smallint [not null, default: 0]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (status, scheduled_for)
+    (notifiable_type, notifiable_id)
+  }
+  Note: 'Relación polimórfica: el destinatario es un usuario del centro o un paciente.'
+}
+
+Table notification_preferences {
+  id integer [primary key]
+  notifiable_type varchar [not null, note: 'users o patients']
+  notifiable_id integer [not null]
+  type notification_type [not null]
+  channel notification_channel [not null]
+  is_enabled boolean [not null, default: true]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (notifiable_type, notifiable_id, type, channel) [unique]
+  }
+}
+
+Table push_subscriptions {
+  id integer [primary key]
+  user_id integer [not null]
+  endpoint text [not null, unique]
+  public_key varchar [not null]
+  auth_token varchar [not null]
+  user_agent varchar
+  last_success_at timestamptz
+  created_at timestamp
+  updated_at timestamp
+}
+
+// ─────────────── Auditoría ───────────────
+
+Table audits {
+  id integer [primary key]
+  actor_type varchar [note: 'users o patients. Nulo si lo ejecutó el planificador']
+  actor_id integer
+  auditable_type varchar [not null, note: 'Modelo afectado']
+  auditable_id integer [not null]
+  event varchar [not null, note: 'created, updated, deleted']
+  old_values json
+  new_values json
+  ip_address varchar
+  user_agent varchar
+  created_at timestamp
+
+  indexes {
+    (auditable_type, auditable_id)
+    (actor_type, actor_id)
+  }
+  Note: 'Solo admite alta. No se edita ni se elimina desde la aplicación.'
+}
+
+// ─────────────── Relaciones ───────────────
+// Las relaciones polimórficas —notifications, notification_preferences y el
+// actor de audits— no se expresan en DBML y no se dibujan en el diagrama.
+
+Ref: role_user.role_id > roles.id
+Ref: role_user.user_id > users.id
+Ref: permission_role.permission_id > permissions.id
+Ref: permission_role.role_id > roles.id
+
+Ref: patients.health_insurance_id > health_insurances.id
+Ref: patients.nationality_id > nationalities.id
+
+Ref: professionals.user_id - users.id
+Ref: professional_specialty.professional_id > professionals.id
+Ref: professional_specialty.specialty_id > specialties.id
+
+Ref: schedules.professional_id > professionals.id
+Ref: schedules.specialty_id > specialties.id
+Ref: schedules.room_id > rooms.id
+Ref: schedule_exceptions.professional_id > professionals.id
+
+Ref: medical_records.patient_id - patients.id
+Ref: medical_entries.medical_record_id > medical_records.id
+Ref: medical_entries.appointment_id - appointments.id
+Ref: medical_entries.professional_id > professionals.id
+
+Ref: appointments.patient_id > patients.id
+Ref: appointments.professional_id > professionals.id
+Ref: appointments.specialty_id > specialties.id
+Ref: appointments.room_id > rooms.id
+Ref: appointments.created_by > users.id
+Ref: appointments.cancelled_by > users.id
+
+Ref: notifications.appointment_id > appointments.id
+Ref: push_subscriptions.user_id > users.id
+

@@ -1,0 +1,76 @@
+services:
+    cmb-api:
+        image: php:8.5.12-fpm-alpine
+        container_name: cmb-api
+        ports:
+            - '8001:8000'
+        environment:
+            APP_ENV: '${APP_ENV:-local}'
+            APP_DEBUG: '${APP_DEBUG:-false}'
+            DB_CONNECTION: '${DB_CONNECTION:-pgsql}'
+            DB_HOST: '${DB_HOST:-cmb-db}'
+            DB_PORT: '${DB_PORT:-5432}'
+            DB_DATABASE: '${DB_DATABASE:?DB_DATABASE is required in .env}'
+            DB_USERNAME: '${DB_USERNAME:?DB_USERNAME is required in .env}'
+            DB_PASSWORD: '${DB_PASSWORD:?DB_PASSWORD is required in .env}'
+        volumes:
+            - '.:/var/www/html'
+        working_dir: /var/www/html
+        command: sh -c 'apk add --no-cache postgresql-dev libpng-dev libzip-dev && docker-php-ext-install pdo pdo_pgsql gd zip && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && composer install --optimize-autoloader --ignore-platform-reqs --no-scripts 2>/dev/null || true && php artisan serve --host=0.0.0.0 --port=8000'
+        depends_on:
+            - cmb-db
+        networks:
+            - cmb-network
+            - traefik-network
+        labels:
+            - 'traefik.enable=true'
+            - 'traefik.http.routers.cmb-api.rule=Host(`cmb-be.dev.policiamisiones.gob.ar`) || Host(`cmb-be.stg.policiamisiones.gob.ar`)'
+            - 'traefik.http.routers.cmb-api.entrypoints=websecure'
+            - 'traefik.http.routers.cmb-api.tls.certresolver=letsencrypt'
+            - 'traefik.http.services.cmb-api.loadbalancer.server.port=8000'
+
+    cmb-queue:
+        image: php:8.5.12-fpm-alpine
+        container_name: cmb-queue
+        environment:
+            APP_ENV: '${APP_ENV:-local}'
+            APP_DEBUG: '${APP_DEBUG:-false}'
+            DB_CONNECTION: '${DB_CONNECTION:-pgsql}'
+            DB_HOST: '${DB_HOST:-cmb-db}'
+            DB_PORT: '${DB_PORT:-5432}'
+            DB_DATABASE: '${DB_DATABASE:?DB_DATABASE is required in .env}'
+            DB_USERNAME: '${DB_USERNAME:?DB_USERNAME is required in .env}'
+            DB_PASSWORD: '${DB_PASSWORD:?DB_PASSWORD is required in .env}'
+            DB_QUEUE_RETRY_AFTER: '330'
+        volumes:
+            - '.:/var/www/html'
+        working_dir: /var/www/html
+        command: sh -c 'apk add --no-cache postgresql-dev libpng-dev libzip-dev && docker-php-ext-install pdo pdo_pgsql gd zip && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && composer install --optimize-autoloader --ignore-platform-reqs --no-scripts 2>/dev/null || true && php artisan queue:work --sleep=3 --tries=3 --timeout=300 --max-time=3600 --memory=512'
+        depends_on:
+            - cmb-db
+        networks:
+            - cmb-network
+        restart: unless-stopped
+        stop_grace_period: 330s
+
+    cmb-db:
+        image: postgres:16-alpine
+        container_name: cmb-db
+        environment:
+            POSTGRES_DB: '${DB_DATABASE:?DB_DATABASE is required in .env}'
+            POSTGRES_USER: '${DB_USERNAME:?DB_USERNAME is required in .env}'
+            POSTGRES_PASSWORD: '${DB_PASSWORD:?DB_PASSWORD is required in .env}'
+        volumes:
+            - cmb-volume:/var/lib/postgresql/data
+        networks:
+            - cmb-network
+
+networks:
+    cmb-network:
+        driver: bridge
+    traefik-network:
+        external: true
+        name: traefik-network
+
+volumes:
+  cmb-volume:
