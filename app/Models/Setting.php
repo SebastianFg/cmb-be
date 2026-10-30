@@ -19,6 +19,7 @@ class Setting extends Model
         'cancellation_penalty_days',
         'reminder_lead_minutes',
         'no_show_alert_threshold',
+        'booking_horizon_days',
     ];
 
     /** @var array<string, mixed> */
@@ -34,6 +35,7 @@ class Setting extends Model
             'cancellation_penalty_days' => 'integer',
             'reminder_lead_minutes' => 'integer',
             'no_show_alert_threshold' => 'integer',
+            'booking_horizon_days' => 'integer',
         ];
     }
 }

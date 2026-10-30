@@ -1,204 +1,104 @@
-# Sistema de Autorización por Permisos
+# Autenticación y autorización
 
-## Arquitectura
+Cómo decide la API quién entra a cada ruta. Son tres capas y ninguna usa
+permisos: el acceso se resuelve por **actor** y por **rol** (RNF-02).
 
 ```
-Request con Bearer Token (JWT Keycloak)
+Request con Authorization: Bearer <token>
 │
-└─► auth:api (Keycloak Guard)
-│   Valida el JWT, extrae el usuario autenticado
+└─► auth:sanctum
+│   Resuelve el token personal y carga el actor: User o Patient
 │
-└─► security (Middleware)
-│   Toma UUID del JWT → UserService::getAuthorization()
-│   → Cache::remember('authz:{client}:{uuid}', 900)
-│   → Si cache miss → HTTP al servicio central /authorizations/{uuid}
-│   → Carga roles[] y permisos[] en AuthContext (singleton del request)
+└─► ability:patient   (sólo en /portal/*)
+│   El token tiene que haber sido emitido para un paciente
 │
-└─► can:{permiso} (Middleware nativo de Laravel)
-│   → Gate::before() registrado en AppServiceProvider
-│   → AuthContext::can('incidents.v') → true | false
-│   → false → AuthorizationException → Handler.php → 403 JSON
+└─► role:admin,reception[,professional]   (back-office)
+│   App\Http\Middleware\EnsureUserHasRole
+│   → el actor tiene que ser User y tener alguno de esos roles
+│   → si no, 403 con el sobre de ResponseJson
 │
-└─► Controller (si pasa la autorización)
-    → Service (usa getRoles() para visibilidad de datos)
-    → Response
+└─► Controller
 ```
 
-## Componentes
+## Dos actores, dos tablas
 
-| Capa | Archivo | Responsabilidad |
-|------|---------|-----------------|
-| Middleware | `app/Http/Middleware/Security.php` | Ejecuta antes que los controladores. Extrae el UUID del JWT, consulta roles/permisos y los carga en `AuthContext`. |
-| Contexto | `app/Security/AuthContext.php` | Singleton por request. Almacena roles y permisos del usuario autenticado. Expone `can()`, `hasRole()`, `roles()`, `permissions()`. |
-| Gate dinámico | `app/Providers/AppServiceProvider.php` | `Gate::before()` que resuelve cualquier permiso consultando `AuthContext::can()`. Permite usar `can:` en rutas y `$this->authorize()` en controladores. |
-| Cache | `app/Services/UserService.php` | `getAuthorization()` usa `Cache::remember()` con clave `authz:{client}:{uuid}` y TTL 900s (15 min). Usa file cache por defecto; migrable a Redis. |
-| Exception Handler | `app/Exceptions/Handler.php` | Captura `AuthorizationException` y responde con JSON 403 consistente con el resto de la API. |
-| Permisos | `app/Models/Permission.php` | Constantes con todos los permisos conocidos del sistema. Único lugar donde se definen los nombres. |
+El personal del centro vive en `users` y los pacientes en `patients`. Son
+modelos distintos, con login distinto, y ambos emiten tokens de Sanctum:
 
-## Flujo de datos
+| Actor | Login | Habilidad del token | Roles |
+| --- | --- | --- | --- |
+| `User` | `POST /api/v1/auth/users/login` | `user` | `admin`, `reception`, `professional` |
+| `Patient` | `POST /api/v1/auth/patients/login` | `patient` | ninguno |
 
-### 1. Definir un permiso
+El paciente no tiene roles: no los necesita, porque las rutas que puede tocar
+son las de `/portal/*` y se cierran con la habilidad del token.
 
-Todos los permisos se definen como constantes en `app/Models/Permission.php`:
+## El token
+
+`AuthController::login()` borra el token anterior del mismo `device_name` antes
+de emitir uno nuevo, así queda **un token vigente por actor y dispositivo**. La
+expiración se escribe en el propio token además de en `config/sanctum.php`
+(`expiration = 1440`, un día), para que `sanctum:prune-expired` tenga qué
+purgar.
+
+`POST /auth/logout` borra sólo el token en uso: las sesiones abiertas en otros
+equipos siguen vivas.
+
+Los dos logins están limitados a cinco intentos por minuto, segmentados por
+tipo de actor, correo e IP (`AppServiceProvider::registerLoginRateLimiters()`):
+probar contraseñas contra una cuenta no bloquea a las demás.
+
+## Los roles
+
+Están en la tabla `roles`, los crea `RoleSeeder` y se asignan por la tabla
+intermedia `role_user`:
+
+| Rol | Alcance |
+| --- | --- |
+| `admin` | Todo el back-office |
+| `reception` | Mostrador: fichas, turnos y agenda |
+| `professional` | Agenda: sólo la propia |
+
+`EnsureUserHasRole` se registra como alias `role` en `bootstrap/app.php` y se
+usa en `routes/api.php`:
 
 ```php
-class Permission extends Model
-{
-    const INCIDENTS_VIEW = 'incidents.view';
-    const INCIDENTS_CREATE = 'incidents.create';
-    const CALLS_VIEW = 'calls.view';
-    const CALLS_CREATE = 'calls.create';
-    // ...
-}
+Route::middleware(['auth:sanctum', 'role:admin,reception'])->group(...);
 ```
 
-### 2. Proteger una ruta
+Rechaza con 403 tanto al paciente (no es un `User`) como al usuario sin el rol
+pedido.
 
-En `routes/api.php`, usando la constante:
+### El profesional ve sólo lo suyo
 
-```php
-use App\Models\Permission;
+El rol no alcanza para eso, porque dos profesionales tienen el mismo rol. El
+recorte es por dato y lo hacen los controladores: `AgendaController` fuerza la
+columna del profesional de la sesión y `AppointmentController` rechaza con 403
+los turnos de la agenda de otro (`assertBelongsToActor`).
 
-Route::post('/incidents', [IncidentController::class, 'store'])
-    ->middleware('can:' . Permission::INCIDENTS_CREATE);
-```
+## Lo que no hay
 
-### 3. Proteger desde un controlador
+- **No hay permisos.** Los modelos `Role` y `Permission` traen la tabla
+  intermedia del template, pero nada del código consulta permisos: no hay
+  `can:` en las rutas ni `Gate::before()`.
+- **No hay Keycloak ni JWT.** La sesión es un token personal de Sanctum
+  guardado en `personal_access_tokens`.
+- **No hay servicio central de usuarios.** Las cuentas son locales y las
+  siembra `DemoAccountSeeder`.
 
-```php
-public function store(StoreIncidentRequest $request)
-{
-    $this->authorize(Permission::INCIDENTS_CREATE);
-    // ...
-}
-```
-
-### 4. Verificar en policies (a futuro)
-
-```php
-class IncidentPolicy
-{
-    public function create(User $user): bool
-    {
-        return app(\App\Security\AuthContext::class)->can(Permission::INCIDENTS_CREATE);
-    }
-}
-```
-
-## Cache
-
-### Configuración actual
-
-- **Driver**: file (por defecto en Laravel)
-- **Clave**: `authz:{clientName}:{userUuid}`
-- **TTL**: 900 segundos (15 minutos)
-
-### Comportamiento en falla
-
-Si el servicio central de usuarios no responde:
-- El cache no se escribe (el valor `null` no se cachea)
-- El próximo request reintenta la llamada HTTP
-- Mientras tanto, `AuthContext` queda con arrays vacíos → todas las autorizaciones fallan → 403
-- Cuando el servicio se recupera, el cache se puebla automáticamente
-
-## Agregar un permiso nuevo
-
-### Backend
-
-1. Agregar la constante en `app/Models/Permission.php`:
-
-```php
-const REPORTS_EXPORT = 'reports.export';
-```
-
-2. Proteger el endpoint en `routes/api.php`:
-
-```php
-Route::get('/reports/export', [ReportController::class, 'export'])
-    ->middleware('can:' . Permission::REPORTS_EXPORT);
-```
-
-3. El permiso debe existir en el servicio central de usuarios, asignado al rol correspondiente.
-
-### Frontend
-
-1. Agregar el permiso al enum `shared/constants/permission.ts`:
-
-```typescript
-export enum PermissionsEnum {
-  REPORTS_EXPORT = 'reports.export',
-}
-```
-
-2. Usarlo con `<Can>`, `useCan()` o `<RequirePermission>` según corresponda.
-
-## Convenciones de nomenclatura
-
-Los permisos usan el formato `{recurso}.{accion}`:
-
-| Sufijo | Significado |
-|--------|-------------|
-| `.view` | View (ver/listar) |
-| `.create` | Create (crear) |
-| `.update` | Update (actualizar) |
-| `.disable` | Delete (eliminar) |
-| `.enable` | Restore (recuperar) |
-| `.view-detail` | Info (detalle) |
-
-Ejemplos: `incidents.view`, `calls.create`, `vehicles.update`, `typif.disable`.
-
-## Mantenimiento
-
-### Agregar permisos al sistema
-
-1. Definir la constante en `Permission.php`
-2. Agregar el permiso en el servicio central de usuarios
-3. Asignar el permiso a los roles correspondientes
-4. Proteger los endpoints en las rutas
-5. (Opcional) Agregar el permiso al frontend
-
-### Deprecar un permiso
-
-1. Mantener la constante en `Permission.php` (no romper rutas existentes)
-2. Eliminar el middleware `can:` de las rutas
-3. Eliminar la asignación del servicio central
-4. En una limpieza posterior, eliminar la constante
-
-### Solución de problemas
-
-**Síntoma**: Endpoint devuelve 403 aunque el usuario debería tener acceso.
-- Verificar que el permiso existe en el servicio central de usuarios
-- Verificar que el usuario tiene el permiso asignado
-- Revisar el cache: `php artisan cache:clear` o esperar 15 min
-- Verificar que el string del permiso coincide exactamente (case-sensitive)
-
-**Síntoma**: Endpoint devuelve 401.
-- El token JWT no es válido o expiró
-- El UUID (`sub` claim) no está presente en el token
-
-**Síntoma**: Lentitud en respuestas.
-- El cache file puede ser más lento en entornos con mucho I/O
-- Migrar a Redis elimina la latencia
-
-## Estructura de archivos
+## Dónde mirar
 
 ```
-cio911-be/
-├── app/
-│   ├── Exceptions/
-│   │   └── Handler.php              # Captura AuthorizationException → 403
-│   ├── Http/
-│   │   ├── Kernel.php               # Registro del middleware 'security'
-│   │   └── Middleware/
-│   │       └── Security.php          # Middleware que carga el contexto
-│   ├── Models/
-│   │   └── Permission.php            # Constantes de permisos
-│   ├── Providers/
-│   │   └── AppServiceProvider.php     # Singleton AuthContext + Gate::before()
-│   ├── Security/
-│   │   └── AuthContext.php            # Contexto de autorización por request
-│   └── Services/
-│       └── UserService.php            # Servicio con cache a API central
-└── routes/
-    └── api.php                        # Rutas protegidas con can:
+app/
+├── Http/
+│   ├── Controllers/AuthController.php   # login de los dos actores, logout, me
+│   └── Middleware/EnsureUserHasRole.php # alias 'role'
+├── Models/
+│   ├── User.php                         # personal, HasApiTokens + roles()
+│   ├── Patient.php                      # paciente, HasApiTokens
+│   └── Role.php
+└── Services/ResponseJson.php            # el sobre de toda respuesta
+bootstrap/app.php                        # alias role / ability / abilities
+config/sanctum.php                       # expiración del token
+routes/api.php                           # qué middleware protege cada grupo
 ```
