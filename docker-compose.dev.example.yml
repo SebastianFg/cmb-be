@@ -21,14 +21,6 @@ services:
             - cmb-db
         networks:
             - cmb-network
-            - traefik-network
-        labels:
-            - 'traefik.enable=true'
-            # Reemplazar por el dominio donde se publique la API.
-            - 'traefik.http.routers.cmb-api.rule=Host(`cmb-be.example.com`)'
-            - 'traefik.http.routers.cmb-api.entrypoints=websecure'
-            - 'traefik.http.routers.cmb-api.tls.certresolver=letsencrypt'
-            - 'traefik.http.services.cmb-api.loadbalancer.server.port=8000'
 
     cmb-queue:
         image: php:8.5.12-fpm-alpine
@@ -69,9 +61,6 @@ services:
 networks:
     cmb-network:
         driver: bridge
-    traefik-network:
-        external: true
-        name: traefik-network
 
 volumes:
   cmb-volume:
