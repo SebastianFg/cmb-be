@@ -24,7 +24,8 @@ services:
             - traefik-network
         labels:
             - 'traefik.enable=true'
-            - 'traefik.http.routers.cmb-api.rule=Host(`cmb-be.dev.policiamisiones.gob.ar`) || Host(`cmb-be.stg.policiamisiones.gob.ar`)'
+            # Reemplazar por el dominio donde se publique la API.
+            - 'traefik.http.routers.cmb-api.rule=Host(`cmb-be.example.com`)'
             - 'traefik.http.routers.cmb-api.entrypoints=websecure'
             - 'traefik.http.routers.cmb-api.tls.certresolver=letsencrypt'
             - 'traefik.http.services.cmb-api.loadbalancer.server.port=8000'

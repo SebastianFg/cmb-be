@@ -18,6 +18,7 @@ class SettingFactory extends Factory
             'cancellation_penalty_days' => 7,
             'reminder_lead_minutes' => 1440,
             'no_show_alert_threshold' => 20,
+            'booking_horizon_days' => 30,
         ];
     }
 }

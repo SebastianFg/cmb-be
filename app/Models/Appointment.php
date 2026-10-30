@@ -30,6 +30,7 @@ class Appointment extends Model
         'source',
         'confirmation_code',
         'cancellation_reason',
+        'reason',
         'is_penalized',
         'notes',
         'attended_at',

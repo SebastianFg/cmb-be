@@ -34,7 +34,8 @@ class AppointmentFactory extends Factory
             'confirmation_code' => Str::upper(Str::random(10)),
             'cancellation_reason' => null,
             'is_penalized' => false,
-            'notes' => fake()->optional()->sentence(),
+            'reason' => fake()->optional()->sentence(),
+            'notes' => null,
             'attended_at' => null,
         ];
     }
