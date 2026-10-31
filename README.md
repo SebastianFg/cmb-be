@@ -144,7 +144,7 @@ que pide el proyecto es más nueva que la que suele venir instalada.
 ## Cuentas sembradas
 
 Una por rol, todas con la misma contraseña, que sale de `SEED_ACCOUNT_PASSWORD`
-(por defecto `Belgrano#2026$Seg`):
+(por defecto `Belgrano2026#`):
 
 | Correo | Rol | Entra a |
 | --- | --- | --- |
