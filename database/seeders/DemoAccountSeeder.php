@@ -16,7 +16,7 @@ class DemoAccountSeeder extends Seeder
      * Contraseña de las cuentas de prueba. Se puede reemplazar con
      * SEED_ACCOUNT_PASSWORD; no debe usarse este valor en producción.
      */
-    private const DEFAULT_PASSWORD = 'Belgrano#2026$Seg';
+    private const DEFAULT_PASSWORD = 'Belgrano2026#';
 
     /**
      * Una cuenta de personal por rol.
